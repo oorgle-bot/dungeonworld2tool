@@ -1,0 +1,11 @@
+# SSH keys — never commit these
+keykey
+keykey.pub
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
