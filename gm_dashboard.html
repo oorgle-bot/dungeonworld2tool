@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Great Undoing — GM Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; }
+    input, textarea, select {
+      background-color: #1f2937; border: 1px solid #374151; color: #f9fafb;
+      border-radius: 4px; padding: 4px 8px; font-size: 13px;
+    }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: #f59e0b; }
+    textarea { font-family: inherit; }
+    .scrollable { overflow-y: auto; }
+    .tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: #1f2937; border: 1px solid #374151;
+      border-radius: 999px; padding: 2px 10px; font-size: 12px;
+    }
+    .sec-header {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: #6b7280;
+      padding: 6px 0 4px; border-bottom: 1px solid #374151;
+      margin-bottom: 10px; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      user-select: none;
+    }
+    .sec-header:hover { color: #9ca3af; }
+    .gm-move {
+      padding: 7px 10px; border-radius: 4px; cursor: pointer;
+      border: 1px solid transparent; transition: all 0.12s;
+      font-size: 13px; margin-bottom: 3px;
+    }
+    .gm-move:hover { background: #1f2937; border-color: #374151; }
+    .gm-move.hi { background: #451a03; border-color: #f59e0b; color: #fde68a; }
+    .heat-pip {
+      width: 15px; height: 15px; border-radius: 50%; cursor: pointer;
+      border: 1px solid #4b5563; display: inline-block; margin: 0 2px;
+      transition: background 0.1s;
+    }
+    .heat-pip.on { background: #ef4444; border-color: #dc2626; }
+    .heat-pip.off { background: transparent; }
+    input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      height: 4px; background: #374151; border-radius: 2px;
+      outline: none; border: none; padding: 0; cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 16px; height: 16px;
+      border-radius: 50%; background: #f59e0b; cursor: pointer;
+    }
+    input[type=checkbox] { accent-color: #f59e0b; width: 15px; height: 15px; cursor: pointer; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; }
+    .dropdown-overlay { position: fixed; inset: 0; z-index: 99; }
+  </style>
+</head>
+<body style="background:#0f172a; color:#f1f5f9; min-height:100vh;">
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useReducer, useEffect, useRef, useCallback } = React;
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
+const statMod = v => Math.floor(((v||10) - 10) / 2);
+const fmtMod = m => (m >= 0 ? `+${m}` : `${m}`);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const STORAGE_KEY = 'gm_dashboard_v2';
+
+// ── Blank templates ────────────────────────────────────────────────────────
+const newChar = () => ({
+  id: uid(), name: '', race: '', class: '', playerName: '',
+  level: 1, xp: 0, description: '',
+  stats: { str:10, dex:10, con:10, int:10, wis:10, cha:10 },
+  hp: { current: 8, max: 8 }, armor: 0,
+  statusEffects: [], advancements: [], classPath: '',
+  moves: [], equipment: [], bonds: '',
+  relationships: {}, factionRelationships: {},
+  storyBeats: [], gmNotes: ''
+});
+
+const newFaction = () => ({ id: uid(), name:'', leader:'', base:'', agenda:'', heat:0 });
+const newNPC     = () => ({ id: uid(), name:'', faction:'', role:'', hook:'', secret:'' });
+const blankXP    = () => ({ q1:false,q2:false,q3:false,q4:false,q5:false,q6:false });
+
+const newCampaign = (name = 'New Campaign') => ({
+  id: uid(), name,
+  characters: [],
+  sessionNotes: '',
+  xpChecklist: blankXP(),
+  randomTables: [],
+});
+
+function makeFreshState() {
+  const c = newCampaign('The Great Undoing');
+  return { campaigns: [c], activeCampaignId: c.id, factions: [], npcs: [] };
+}
+
+function loadState() {
+  try {
+    const s2 = localStorage.getItem('gm_dashboard_v2');
+    if (s2) {
+      const parsed = JSON.parse(s2);
+      // Ensure all campaigns have randomTables field
+      if (parsed.campaigns) {
+        parsed.campaigns = parsed.campaigns.map(c => ({ randomTables: [], ...c }));
+      }
+      if (!parsed.activeCampaignId && parsed.campaigns?.length) {
+        parsed.activeCampaignId = parsed.campaigns[0].id;
+      }
+      return parsed;
+    }
+    // Migrate from v1
+    const s1 = localStorage.getItem('gm_dashboard_v1');
+    if (s1) {
+      const old = JSON.parse(s1);
+      const c = newCampaign('The Great Undoing');
+      c.characters = old.characters || [];
+      c.sessionNotes = old.sessionNotes || '';
+      c.xpChecklist = old.xpChecklist || blankXP();
+      return { campaigns: [c], activeCampaignId: c.id, factions: old.factions || [], npcs: old.npcs || [] };
+    }
+  } catch {}
+  return makeFreshState();
+}
+
+const getActiveCampaign = state =>
+  state.campaigns.find(c => c.id === state.activeCampaignId) || state.campaigns[0];
+
+// ── Reducer ────────────────────────────────────────────────────────────────
+function reducer(state, action) {
+  const ac = getActiveCampaign(state);
+  const updAC = patch => ({
+    ...state,
+    campaigns: state.campaigns.map(c => c.id === state.activeCampaignId ? { ...c, ...patch } : c)
+  });
+
+  switch (action.type) {
+    // Campaign management
+    case 'ADD_CAMPAIGN': {
+      const c = newCampaign(action.name || 'New Campaign');
+      return { ...state, campaigns: [...state.campaigns, c], activeCampaignId: c.id };
+    }
+    case 'SWITCH_CAMPAIGN': return { ...state, activeCampaignId: action.id };
+    case 'DEL_CAMPAIGN': {
+      if (state.campaigns.length <= 1) return state;
+      const remaining = state.campaigns.filter(c => c.id !== action.id);
+      const newActive = state.activeCampaignId === action.id ? remaining[0].id : state.activeCampaignId;
+      return { ...state, campaigns: remaining, activeCampaignId: newActive };
+    }
+    case 'RENAME_CAMPAIGN': return updAC({ name: action.name });
+
+    // Characters (campaign-scoped)
+    case 'ADD_CHAR':  return updAC({ characters: [...ac.characters, action.char] });
+    case 'UPD_CHAR':  return updAC({ characters: ac.characters.map(c => c.id===action.id ? {...c,...action.patch} : c) });
+    case 'DEL_CHAR':  return updAC({ characters: ac.characters.filter(c => c.id!==action.id) });
+
+    // Factions (global/shared)
+    case 'ADD_FAC':   return { ...state, factions: [...state.factions, newFaction()] };
+    case 'UPD_FAC':   return { ...state, factions: state.factions.map(f => f.id===action.id ? {...f,...action.patch} : f) };
+    case 'DEL_FAC':   return { ...state, factions: state.factions.filter(f => f.id!==action.id) };
+
+    // NPCs (global/shared)
+    case 'ADD_NPC':            return { ...state, npcs: [...state.npcs, newNPC()] };
+    case 'ADD_NPC_WITH_DATA':  return { ...state, npcs: [...state.npcs, { ...newNPC(), ...action.data }] };
+    case 'UPD_NPC':            return { ...state, npcs: state.npcs.map(n => n.id===action.id ? {...n,...action.patch} : n) };
+    case 'DEL_NPC':            return { ...state, npcs: state.npcs.filter(n => n.id!==action.id) };
+
+    // Session (campaign-scoped)
+    case 'SET_NOTES':  return updAC({ sessionNotes: action.value });
+    case 'TOGGLE_XP':  return updAC({ xpChecklist: { ...ac.xpChecklist, [action.key]: !ac.xpChecklist[action.key] } });
+    case 'RESET_XP':   return updAC({ xpChecklist: blankXP() });
+
+    // Random tables (campaign-scoped)
+    case 'ADD_TABLE':  return updAC({ randomTables: [...(ac.randomTables||[]), { id:uid(), name:'New Table', entries:[] }] });
+    case 'UPD_TABLE':  return updAC({ randomTables: (ac.randomTables||[]).map(t => t.id===action.id ? {...t,...action.patch} : t) });
+    case 'DEL_TABLE':  return updAC({ randomTables: (ac.randomTables||[]).filter(t => t.id!==action.id) });
+
+    default: return state;
+  }
+}
+
+// ── Static Data ────────────────────────────────────────────────────────────
+const GM_MOVES = [
+  'Use a monster move','Reveal an unwelcome truth','Deal damage',
+  'Use up their resources','Separate them','Put someone in a spot',
+  'Show signs of an approaching threat','Offer an opportunity (with or without cost)',
+  "Turn their move back on them",'Make them buy',
+  'Activate their bonds/ties','Tell them the consequences and ask'
+];
+
+const MAGIC_79 = [
+  'Draw unwanted attention or put yourself in a spot',
+  'The spell has an unintended side effect (GM describes)',
+  'Collateral damage — something nearby is affected',
+  'You lose the spell until you have time to prepare again',
+  'The magic leaves a visible, strange mark on you',
+  'It works, but the strain deals 1d4 damage to you'
+];
+
+const MAGIC_MISS = [
+  'The spell misfires — affects you or an ally instead',
+  'The magic draws something terrible toward you',
+  'You lose all prepared spells until you rest',
+  'A rift tears open; something comes through',
+  'You are stunned and helpless until you can act',
+  'The GM makes a hard move immediately, without warning'
+];
+
+const XP_QUESTIONS = [
+  { key:'q1', text:'Did we learn something new and important about the world?' },
+  { key:'q2', text:'Did we overcome a notable monster or enemy?' },
+  { key:'q3', text:'Did we loot a memorable treasure?' },
+  { key:'q4', text:'Did we visit a notable location?' },
+  { key:'q5', text:'Did any PC resolve a bond?' },
+  { key:'q6', text:"Did any PC fulfill their drive?" }
+];
+
+const PREP_PROMPTS = [
+  "Which PC's story should move forward today?",
+  "What faction is applying pressure right now?",
+  "What GM move have you been holding back?",
+  "What has changed in the world since last session?",
+  "What promise or threat is coming due?"
+];
+
+// ── NPC Generator Data ─────────────────────────────────────────────────────
+const NPC_GEN = {
+  prefixes: ['Al','Bran','Cal','Dor','El','Fae','Gar','Hel','Ira','Jas','Kael','Lor','Mira','Nox','Ora','Phar','Quel','Ryn','Sera','Tor','Uli','Val','Wren','Xan','Yara','Zel'],
+  suffixes: ['wen','dor','ix','ara','eth','ion','ys','an','or','ia','en','us','el','ith','ash'],
+  roles: [
+    'Wandering Merchant','Disgraced Knight','Temple Acolyte','Guild Informant',
+    'Retired Soldier','Hedge Wizard','River Ferryman','Village Herbalist',
+    'Debt Collector','Traveling Bard','Mine Foreman','Fence and Smuggler'
+  ],
+  hooks: [
+    'Owes a debt they cannot repay','Searching for a missing sibling',
+    'Has a secret they will kill to protect','Desperate for coin to flee the city',
+    'Haunted by something they witnessed','Loyal to a faction the PCs oppose',
+    'Knows more than they let on','Looking for someone to trust',
+    'Recently lost everything in a fire','Carries an item of unknown value',
+    'Has been following the party from afar','Needs one last favor before disappearing'
+  ],
+};
+
+const genNPC = () => ({
+  name: pick(NPC_GEN.prefixes) + pick(NPC_GEN.suffixes),
+  role: pick(NPC_GEN.roles),
+  hook: pick(NPC_GEN.hooks),
+});
+
+// ── Module Registry ────────────────────────────────────────────────────────
+const MODULE_REGISTRY = [
+  { key:'dice',   label:'Dice Roller',   disabled:false },
+  { key:'tables', label:'Random Tables', disabled:false },
+  { key:'npcgen', label:'NPC Generator', disabled:false },
+  { key:'voice',  label:'Voice Recap',   disabled:true  },
+];
+
+// ── Shared UI ──────────────────────────────────────────────────────────────
+function Btn({ onClick, children, variant='default', style={} }) {
+  const vars = {
+    default: { background:'#1f2937', border:'1px solid #374151', color:'#e5e7eb' },
+    primary: { background:'#92400e', border:'1px solid #b45309', color:'#fef3c7' },
+    danger:  { background:'#450a0a', border:'1px solid #7f1d1d', color:'#fca5a5' },
+    ghost:   { background:'transparent', border:'1px solid transparent', color:'#6b7280' },
+  };
+  return (
+    <button onClick={onClick} style={{ ...vars[variant], padding:'4px 12px', borderRadius:'4px', fontSize:'13px', fontWeight:600, cursor:'pointer', transition:'opacity 0.1s', ...style }}>
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, children, style={} }) {
+  return (
+    <div style={{ marginBottom:8, ...style }}>
+      <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:'#6b7280', marginBottom:3 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function Section({ title, children, open:defaultOpen=true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ marginBottom:16 }}>
+      <div className="sec-header" onClick={() => setOpen(o => !o)}>
+        <span>{title}</span>
+        <span style={{ fontSize:9 }}>{open ? '▲' : '▼'}</span>
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
+function TagList({ items, onAdd, onRemove, placeholder }) {
+  const [val, setVal] = useState('');
+  const add = () => { if (val.trim()) { onAdd(val.trim()); setVal(''); } };
+  return (
+    <div>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:8 }}>
+        {items.map((item, i) => (
+          <span key={i} className="tag">
+            {item}
+            <button onClick={() => onRemove(i)} style={{ background:'none', border:'none', color:'#6b7280', cursor:'pointer', fontSize:12, lineHeight:1, padding:0 }}>✕</button>
+          </span>
+        ))}
+        {items.length === 0 && <span style={{ color:'#374151', fontSize:12, fontStyle:'italic' }}>None yet.</span>}
+      </div>
+      <div style={{ display:'flex', gap:6 }}>
+        <input value={val} onChange={e => setVal(e.target.value)}
+          onKeyDown={e => e.key==='Enter' && add()}
+          placeholder={placeholder || 'Add...'} style={{ flex:1 }} />
+        <Btn onClick={add}>+</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Stats Block ────────────────────────────────────────────────────────────
+function StatsBlock({ stats, onChange }) {
+  const KEYS = ['str','dex','con','int','wis','cha'];
+  const LABELS = { str:'STR',dex:'DEX',con:'CON',int:'INT',wis:'WIS',cha:'CHA' };
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:8 }}>
+      {KEYS.map(k => {
+        const mod = statMod(stats[k]);
+        return (
+          <div key={k} style={{ background:'#111827', borderRadius:6, padding:'10px 4px', textAlign:'center' }}>
+            <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.1em', color:'#6b7280', marginBottom:4 }}>{LABELS[k]}</div>
+            <input type="number" min={1} max={20} value={stats[k]}
+              onChange={e => onChange(k, parseInt(e.target.value)||10)}
+              style={{ width:44, textAlign:'center', fontSize:18, fontWeight:900, background:'transparent', border:'1px solid #374151', borderRadius:4, color:'#f9fafb', padding:'2px 0' }} />
+            <div style={{ fontSize:14, fontWeight:700, marginTop:4, color: mod>0?'#10b981':mod<0?'#ef4444':'#6b7280' }}>{fmtMod(mod)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── HP Tracker ─────────────────────────────────────────────────────────────
+function HPTracker({ hp, armor, onChange, onArmorChange }) {
+  const pct = hp.max > 0 ? Math.max(0, Math.min(100, (hp.current/hp.max)*100)) : 0;
+  const bar = pct > 60 ? '#10b981' : pct > 30 ? '#f59e0b' : '#ef4444';
+  return (
+    <div style={{ display:'flex', gap:20, flexWrap:'wrap', alignItems:'flex-start' }}>
+      <div style={{ flex:1, minWidth:200 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <Btn onClick={() => onChange('current', Math.max(0, hp.current-1))}>−</Btn>
+          <span style={{ fontSize:20, fontWeight:900 }}>{hp.current}</span>
+          <span style={{ color:'#4b5563' }}>/</span>
+          <input type="number" min={1} value={hp.max}
+            onChange={e => onChange('max', parseInt(e.target.value)||1)}
+            style={{ width:52, textAlign:'center', fontSize:17, fontWeight:700 }} />
+          <span style={{ fontSize:12, color:'#6b7280' }}>HP</span>
+          <Btn onClick={() => onChange('current', Math.min(hp.max, hp.current+1))}>+</Btn>
+        </div>
+        <div style={{ background:'#1f2937', borderRadius:4, height:8, overflow:'hidden' }}>
+          <div style={{ width:`${pct}%`, height:'100%', background:bar, transition:'width 0.3s,background 0.3s' }} />
+        </div>
+      </div>
+      <Field label="Armor">
+        <input type="number" min={0} max={12} value={armor}
+          onChange={e => onArmorChange(parseInt(e.target.value)||0)}
+          style={{ width:56, textAlign:'center' }} />
+      </Field>
+    </div>
+  );
+}
+
+// ── Equipment List ─────────────────────────────────────────────────────────
+function EquipmentList({ items, onChange }) {
+  const add = () => onChange([...items, { id:uid(), name:'', notes:'' }]);
+  const rm  = id => onChange(items.filter(i => i.id!==id));
+  const upd = (id,p) => onChange(items.map(i => i.id===id ? {...i,...p} : i));
+  return (
+    <div>
+      {items.map(item => (
+        <div key={item.id} style={{ display:'flex', gap:6, marginBottom:6, alignItems:'center' }}>
+          <input value={item.name} placeholder="Item name"
+            onChange={e => upd(item.id,{name:e.target.value})}
+            style={{ width:160 }} />
+          <input value={item.notes} placeholder="Notes"
+            onChange={e => upd(item.id,{notes:e.target.value})}
+            style={{ flex:1 }} />
+          <button onClick={() => rm(item.id)}
+            style={{ background:'none', border:'none', color:'#6b7280', cursor:'pointer', fontSize:14 }}>✕</button>
+        </div>
+      ))}
+      {items.length === 0 && <div style={{ color:'#374151', fontSize:12, fontStyle:'italic', marginBottom:8 }}>No equipment yet.</div>}
+      <Btn onClick={add}>+ Add Item</Btn>
+    </div>
+  );
+}
+
+// ── Story Beats ────────────────────────────────────────────────────────────
+function StoryBeatsLog({ beats, onAdd, onDelete }) {
+  const [val, setVal] = useState('');
+  const add = () => {
+    if (val.trim()) {
+      onAdd({ id:uid(), timestamp: new Date().toLocaleString(), text: val.trim() });
+      setVal('');
+    }
+  };
+  return (
+    <div>
+      <div style={{ maxHeight:200, overflowY:'auto', marginBottom:10 }}>
+        {[...beats].reverse().map(b => (
+          <div key={b.id} style={{ background:'#111827', borderRadius:4, padding:'8px 10px', marginBottom:6, borderLeft:'3px solid #f59e0b' }}>
+            <div style={{ fontSize:10, color:'#4b5563', marginBottom:3 }}>{b.timestamp}</div>
+            <div style={{ fontSize:13 }}>{b.text}</div>
+            <button onClick={() => onDelete(b.id)}
+              style={{ fontSize:11, color:'#4b5563', background:'none', border:'none', cursor:'pointer', padding:'2px 0 0' }}>
+              Remove
+            </button>
+          </div>
+        ))}
+        {beats.length === 0 && <div style={{ color:'#374151', fontSize:12, fontStyle:'italic' }}>No story beats logged yet.</div>}
+      </div>
+      <div style={{ display:'flex', gap:6 }}>
+        <input value={val} onChange={e => setVal(e.target.value)}
+          onKeyDown={e => e.key==='Enter' && add()}
+          placeholder="Log a story beat..." style={{ flex:1 }} />
+        <Btn onClick={add} variant="primary">Log</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── Faction Standing ───────────────────────────────────────────────────────
+const FAC_LABELS = {'-3':'Hostile','-2':'Unfriendly','-1':'Cool','0':'Neutral','1':'Warm','2':'Friendly','3':'Allied'};
+
+function FactionStanding({ factions, rel, onChange }) {
+  if (!factions.length) return (
+    <div style={{ color:'#374151', fontSize:12, fontStyle:'italic' }}>
+      No factions defined yet — add them in the NPCs &amp; Factions tab.
+    </div>
+  );
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:10 }}>
+      {factions.map(f => {
+        const val = rel[f.id] ?? 0;
+        return (
+          <div key={f.id} style={{ background:'#111827', borderRadius:6, padding:'8px 10px' }}>
+            <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>{f.name || '(unnamed faction)'}</div>
+            <input type="range" min={-3} max={3} step={1} value={val}
+              onChange={e => onChange(f.id, parseInt(e.target.value))}
+              style={{ width:'100%' }} />
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, marginTop:2 }}>
+              <span style={{ color:'#4b5563' }}>−3</span>
+              <span style={{ color: val>0?'#10b981':val<0?'#ef4444':'#6b7280', fontWeight:700 }}>
+                {fmtMod(val)} {FAC_LABELS[String(val)]}
+              </span>
+              <span style={{ color:'#4b5563' }}>+3</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── PC Detail ──────────────────────────────────────────────────────────────
+function PCDetail({ char, allChars, factions, dispatch }) {
+  const upd = patch => dispatch({ type:'UPD_CHAR', id:char.id, patch });
+
+  return (
+    <div className="scrollable" style={{ flex:1, padding:'16px 20px', height:'100%' }}>
+
+      <Section title="Identity">
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:8 }}>
+          {[['Character Name','name'],['Race','race'],['Class / Playbook','class'],['Player Name','playerName']].map(([label,key]) => (
+            <Field key={key} label={label}>
+              <input value={char[key]} onChange={e => upd({[key]:e.target.value})} style={{ width:'100%' }} />
+            </Field>
+          ))}
+          <Field label="Level">
+            <input type="number" min={1} max={10} value={char.level}
+              onChange={e => upd({level:parseInt(e.target.value)||1})} style={{ width:60 }} />
+          </Field>
+        </div>
+      </Section>
+
+      <Section title="Stats">
+        <StatsBlock stats={char.stats}
+          onChange={(k,v) => upd({ stats:{...char.stats,[k]:v} })} />
+      </Section>
+
+      <Section title="HP & Combat">
+        <HPTracker hp={char.hp} armor={char.armor}
+          onChange={(field,v) => upd({ hp:{...char.hp,[field]:v} })}
+          onArmorChange={v => upd({armor:v})} />
+      </Section>
+
+      <Section title="Status Effects" open={false}>
+        <TagList items={char.statusEffects}
+          onAdd={s => upd({statusEffects:[...char.statusEffects,s]})}
+          onRemove={i => upd({statusEffects:char.statusEffects.filter((_,idx)=>idx!==i)})}
+          placeholder="Add status effect..." />
+      </Section>
+
+      <Section title="XP & Advancement">
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:12 }}>
+          <Btn onClick={() => upd({xp:Math.max(0,char.xp-1)})}>−</Btn>
+          <span style={{ fontSize:18, fontWeight:900 }}>{char.xp} XP</span>
+          <Btn onClick={() => upd({xp:char.xp+1})}>+</Btn>
+          <span style={{ fontSize:12, color:'#6b7280' }}>Level {char.level} · Next level at {char.level + 7} XP</span>
+        </div>
+        <Field label="Class Path">
+          <input value={char.classPath} onChange={e => upd({classPath:e.target.value})}
+            placeholder="e.g. Path of the Warden" style={{ width:'100%' }} />
+        </Field>
+        <Field label="Advancements Taken" style={{ marginTop:8 }}>
+          <TagList items={char.advancements}
+            onAdd={s => upd({advancements:[...char.advancements,s]})}
+            onRemove={i => upd({advancements:char.advancements.filter((_,idx)=>idx!==i)})}
+            placeholder="Add advancement..." />
+        </Field>
+      </Section>
+
+      <Section title="Moves">
+        <TagList items={char.moves}
+          onAdd={s => upd({moves:[...char.moves,s]})}
+          onRemove={i => upd({moves:char.moves.filter((_,idx)=>idx!==i)})}
+          placeholder="Add move name..." />
+      </Section>
+
+      <Section title="Equipment" open={false}>
+        <EquipmentList items={char.equipment}
+          onChange={eq => upd({equipment:eq})} />
+      </Section>
+
+      <Section title="Description & Origins" open={false}>
+        <textarea value={char.description} rows={4}
+          onChange={e => upd({description:e.target.value})}
+          placeholder="Backstory, appearance, drives..."
+          style={{ width:'100%', resize:'vertical' }} />
+      </Section>
+
+      <Section title="Bonds" open={false}>
+        <textarea value={char.bonds} rows={3}
+          onChange={e => upd({bonds:e.target.value})}
+          placeholder="One bond per line..."
+          style={{ width:'100%', resize:'vertical' }} />
+      </Section>
+
+      <Section title="Relationships with Other PCs" open={false}>
+        {allChars.filter(c => c.id!==char.id).length === 0
+          ? <div style={{ color:'#374151', fontSize:12, fontStyle:'italic' }}>No other PCs in the campaign yet.</div>
+          : allChars.filter(c => c.id!==char.id).map(other => (
+            <Field key={other.id} label={other.name || '(unnamed PC)'}>
+              <input value={char.relationships[other.id]||''}
+                onChange={e => upd({relationships:{...char.relationships,[other.id]:e.target.value}})}
+                placeholder={`Relationship with ${other.name||'this PC'}...`}
+                style={{ width:'100%' }} />
+            </Field>
+          ))
+        }
+      </Section>
+
+      <Section title="Faction Standing" open={false}>
+        <FactionStanding factions={factions} rel={char.factionRelationships}
+          onChange={(fid,v) => upd({factionRelationships:{...char.factionRelationships,[fid]:v}})} />
+      </Section>
+
+      <Section title="Story Beats Log">
+        <StoryBeatsLog beats={char.storyBeats}
+          onAdd={b => upd({storyBeats:[...char.storyBeats,b]})}
+          onDelete={id => upd({storyBeats:char.storyBeats.filter(b=>b.id!==id)})} />
+      </Section>
+
+      <Section title="GM Notes (Private)" open={false}>
+        <textarea value={char.gmNotes} rows={4}
+          onChange={e => upd({gmNotes:e.target.value})}
+          placeholder="Private GM notes — not visible to players..."
+          style={{ width:'100%', resize:'vertical', borderColor:'#6d28d9' }} />
+      </Section>
+
+    </div>
+  );
+}
+
+// ── Characters Tab ─────────────────────────────────────────────────────────
+function CharactersTab({ state, dispatch }) {
+  const campaign = getActiveCampaign(state);
+  const [selId, setSelId] = useState(null);
+
+  // Reset selection when campaign switches
+  useEffect(() => {
+    const firstId = campaign.characters.length > 0 ? campaign.characters[0].id : null;
+    setSelId(firstId);
+  }, [state.activeCampaignId]);
+
+  const selected = campaign.characters.find(c => c.id===selId);
+
+  const addPC = () => {
+    const c = newChar();
+    dispatch({ type:'ADD_CHAR', char:c });
+    setSelId(c.id);
+  };
+
+  return (
+    <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
+      {/* Sidebar */}
+      <div style={{ width:190, minWidth:190, background:'#070f1c', borderRight:'1px solid #1e2d40', display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:10, borderBottom:'1px solid #1e2d40' }}>
+          <button onClick={addPC} style={{ width:'100%', padding:'7px 0', background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', borderRadius:4, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+            + Add PC
+          </button>
+        </div>
+        <div style={{ overflowY:'auto', flex:1 }}>
+          {campaign.characters.map(c => (
+            <div key={c.id} onClick={() => setSelId(c.id)} style={{
+              padding:'10px 12px', cursor:'pointer',
+              borderBottom:'1px solid #111827',
+              background: selId===c.id ? '#0c1f35' : 'transparent',
+              borderLeft: selId===c.id ? '3px solid #f59e0b' : '3px solid transparent',
+            }}>
+              <div style={{ fontWeight:600, fontSize:14 }}>{c.name||'(New PC)'}</div>
+              <div style={{ fontSize:11, color:'#4b5563', marginTop:2 }}>
+                {[c.race,c.class].filter(Boolean).join(' · ')||'No class set'}
+              </div>
+            </div>
+          ))}
+          {campaign.characters.length === 0 && (
+            <div style={{ padding:16, color:'#374151', fontSize:12, textAlign:'center', fontStyle:'italic' }}>
+              No player characters yet.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Detail panel */}
+      {selected ? (
+        <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+          <div style={{ padding:'9px 16px', background:'#070f1c', borderBottom:'1px solid #1e2d40',
+            display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
+            <div>
+              <span style={{ fontWeight:800, fontSize:15 }}>{selected.name||'(New PC)'}</span>
+              <span style={{ color:'#6b7280', fontSize:12, marginLeft:8 }}>
+                Lv {selected.level} {selected.class}
+              </span>
+            </div>
+            <button onClick={() => {
+              if (window.confirm(`Delete ${selected.name||'this character'}? This cannot be undone.`)) {
+                dispatch({ type:'DEL_CHAR', id:selected.id });
+                setSelId(null);
+              }
+            }} style={{ background:'#450a0a', border:'1px solid #7f1d1d', color:'#fca5a5',
+              padding:'4px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+              Delete PC
+            </button>
+          </div>
+          <PCDetail char={selected} allChars={campaign.characters}
+            factions={state.factions} dispatch={dispatch} />
+        </div>
+      ) : (
+        <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'#1e2d40', fontSize:14 }}>
+          Select a character or add a new one.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Dice Roller Module ─────────────────────────────────────────────────────
+function DiceRollerModule() {
+  const [dice, setDice] = useState(null);
+  const [rolling, setRolling] = useState(false);
+
+  const roll = () => {
+    if (rolling) return;
+    setRolling(true);
+    let n = 0;
+    const iv = setInterval(() => {
+      setDice({ d1: Math.ceil(Math.random()*6), d2: Math.ceil(Math.random()*6), final: false });
+      n++;
+      if (n > 12) {
+        clearInterval(iv);
+        const d1 = Math.ceil(Math.random()*6), d2 = Math.ceil(Math.random()*6);
+        setDice({ d1, d2, total: d1+d2, final: true });
+        setRolling(false);
+      }
+    }, 55);
+  };
+
+  const outcome = dice?.final && dice.total !== undefined
+    ? dice.total >= 10 ? { label:'10+ Strong Hit', color:'#10b981' }
+    : dice.total >= 7  ? { label:'7–9 Weak Hit',   color:'#f59e0b' }
+    :                    { label:'6− Miss',          color:'#ef4444' }
+    : null;
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14 }}>
+      <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.12em', color:'#6b7280' }}>2D6 DICE ROLLER</div>
+      <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+        {dice ? (
+          <>
+            {[dice.d1, dice.d2].map((d,i) => (
+              <div key={i} style={{ width:54, height:54, background:'#111827', border:'2px solid #374151', borderRadius:8,
+                display:'flex', alignItems:'center', justifyContent:'center', fontSize:28, fontWeight:900 }}>
+                {d}
+              </div>
+            ))}
+          </>
+        ) : (
+          <div style={{ width:118, height:54, background:'#111827', border:'2px dashed #1e2d40', borderRadius:8,
+            display:'flex', alignItems:'center', justifyContent:'center', color:'#374151', fontSize:12 }}>
+            roll to begin
+          </div>
+        )}
+      </div>
+      {outcome && (
+        <div style={{ textAlign:'center' }}>
+          <div style={{ fontSize:52, fontWeight:900, lineHeight:1 }}>{dice.total}</div>
+          <div style={{ color: outcome.color, fontWeight:700, fontSize:15, marginTop:4 }}>{outcome.label}</div>
+        </div>
+      )}
+      <button onClick={roll} style={{
+        width:'100%', padding:'10px 0', background: rolling?'#374151':'#92400e',
+        border:'1px solid #b45309', color:'#fef3c7', borderRadius:4,
+        fontSize:15, fontWeight:700, cursor: rolling?'default':'pointer', marginTop:'auto'
+      }}>
+        {rolling ? '...' : '🎲 Roll 2d6'}
+      </button>
+    </div>
+  );
+}
+
+// ── Quick Reference Tab ────────────────────────────────────────────────────
+function QuickReferenceTab() {
+  const [hi, setHi] = useState(null);
+
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'220px 1fr 1fr', gap:0, height:'100%', overflow:'hidden' }}>
+
+      {/* Dice Roller */}
+      <div style={{ background:'#070f1c', borderRight:'1px solid #1e2d40', padding:20, display:'flex', flexDirection:'column' }}>
+        <DiceRollerModule />
+      </div>
+
+      {/* GM Moves */}
+      <div style={{ padding:'16px 20px', overflowY:'auto', borderRight:'1px solid #1e2d40' }}>
+        <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.12em', color:'#6b7280', marginBottom:12 }}>GM MOVES</div>
+        {GM_MOVES.map((m,i) => (
+          <div key={i} className={`gm-move ${hi===i?'hi':''}`} onClick={() => setHi(hi===i?null:i)}>
+            <span style={{ color:'#374151', marginRight:8, fontSize:11 }}>{i+1}.</span>{m}
+          </div>
+        ))}
+        <div style={{ marginTop:16, fontSize:11, color:'#374151', fontStyle:'italic' }}>Click a move to highlight it.</div>
+      </div>
+
+      {/* Magic Tables */}
+      <div style={{ padding:'16px 20px', overflowY:'auto' }}>
+        <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.12em', color:'#6b7280', marginBottom:14 }}>MAGIC COMPLICATION TABLES</div>
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'#f59e0b', marginBottom:8 }}>7–9 Weak Hit</div>
+          {MAGIC_79.map((item,i) => (
+            <div key={i} style={{ display:'flex', gap:8, padding:'6px 0', borderBottom:'1px solid #111827', fontSize:13 }}>
+              <span style={{ color:'#374151', minWidth:18, fontSize:11 }}>{i+1}.</span>
+              {item}
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontSize:12, fontWeight:700, color:'#ef4444', marginBottom:8 }}>6− Miss</div>
+          {MAGIC_MISS.map((item,i) => (
+            <div key={i} style={{ display:'flex', gap:8, padding:'6px 0', borderBottom:'1px solid #111827', fontSize:13 }}>
+              <span style={{ color:'#374151', minWidth:18, fontSize:11 }}>{i+1}.</span>
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── NPCs & Factions Tab ────────────────────────────────────────────────────
+function NPCFactionsTab({ state, dispatch }) {
+  return (
+    <div style={{ padding:20, height:'100%', overflowY:'auto' }}>
+
+      {/* Factions */}
+      <div style={{ marginBottom:28 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div>
+            <span style={{ fontSize:13, fontWeight:700, letterSpacing:'0.06em', color:'#9ca3af' }}>FACTIONS</span>
+            <span style={{ fontSize:11, color:'#4b5563', marginLeft:8 }}>shared across all campaigns</span>
+          </div>
+          <button onClick={() => dispatch({type:'ADD_FAC'})}
+            style={{ background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', padding:'4px 12px', borderRadius:4, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+            + Add Faction
+          </button>
+        </div>
+        {state.factions.length === 0
+          ? <div style={{ color:'#374151', fontSize:13, fontStyle:'italic', padding:12, background:'#070f1c', borderRadius:6 }}>No factions yet.</div>
+          : (
+            <div style={{ background:'#070f1c', borderRadius:8, overflow:'hidden', border:'1px solid #1e2d40' }}>
+              <table>
+                <thead>
+                  <tr style={{ background:'#030a14' }}>
+                    {['Name','Leader','Base','Agenda','Heat',''].map(h => (
+                      <th key={h} style={{ padding:'8px 10px', fontSize:10, fontWeight:700, letterSpacing:'0.08em', color:'#4b5563', borderBottom:'1px solid #1e2d40' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.factions.map((f,idx) => (
+                    <tr key={f.id} style={{ borderBottom:'1px solid #0d1a27', background: idx%2===0?'transparent':'#030a14' }}>
+                      {['name','leader','base','agenda'].map(field => (
+                        <td key={field} style={{ padding:'5px 8px' }}>
+                          <input value={f[field]}
+                            onChange={e => dispatch({type:'UPD_FAC', id:f.id, patch:{[field]:e.target.value}})}
+                            placeholder={field.charAt(0).toUpperCase()+field.slice(1)}
+                            style={{ background:'transparent', border:'none', color:'#e5e7eb', width:'100%', fontSize:13, padding:2 }} />
+                        </td>
+                      ))}
+                      <td style={{ padding:'5px 10px', whiteSpace:'nowrap' }}>
+                        {[0,1,2,3,4].map(n => (
+                          <span key={n} className={`heat-pip ${n < f.heat ? 'on' : 'off'}`}
+                            onClick={() => dispatch({type:'UPD_FAC', id:f.id, patch:{heat: n < f.heat ? n : n+1}})}
+                            title={`Heat ${n+1}`} />
+                        ))}
+                      </td>
+                      <td style={{ padding:'5px 8px' }}>
+                        <button onClick={() => { if(window.confirm('Delete this faction?')) dispatch({type:'DEL_FAC',id:f.id}); }}
+                          style={{ background:'none', border:'none', color:'#374151', cursor:'pointer', fontSize:15 }}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </div>
+
+      {/* NPCs */}
+      <div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div>
+            <span style={{ fontSize:13, fontWeight:700, letterSpacing:'0.06em', color:'#9ca3af' }}>NPCs</span>
+            <span style={{ fontSize:11, color:'#4b5563', marginLeft:8 }}>shared across all campaigns</span>
+          </div>
+          <button onClick={() => dispatch({type:'ADD_NPC'})}
+            style={{ background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', padding:'4px 12px', borderRadius:4, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+            + Add NPC
+          </button>
+        </div>
+        {state.npcs.length === 0
+          ? <div style={{ color:'#374151', fontSize:13, fontStyle:'italic', padding:12, background:'#070f1c', borderRadius:6 }}>No NPCs yet.</div>
+          : (
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(270px,1fr))', gap:12 }}>
+              {state.npcs.map(npc => (
+                <div key={npc.id} style={{ background:'#070f1c', border:'1px solid #1e2d40', borderRadius:8, padding:14 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:10 }}>
+                    <input value={npc.name}
+                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{name:e.target.value}})}
+                      placeholder="NPC Name"
+                      style={{ fontWeight:700, fontSize:15, background:'transparent', border:'none', color:'#f9fafb', flex:1 }} />
+                    <button onClick={() => { if(window.confirm('Delete this NPC?')) dispatch({type:'DEL_NPC',id:npc.id}); }}
+                      style={{ background:'none', border:'none', color:'#374151', cursor:'pointer', fontSize:15 }}>✕</button>
+                  </div>
+                  <Field label="Faction">
+                    <select value={npc.faction}
+                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{faction:e.target.value}})}
+                      style={{ width:'100%' }}>
+                      <option value="">— No faction —</option>
+                      {state.factions.map(f => <option key={f.id} value={f.name}>{f.name||'(unnamed)'}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Role">
+                    <input value={npc.role}
+                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{role:e.target.value}})}
+                      placeholder="e.g. Guard Captain, Merchant" style={{ width:'100%' }} />
+                  </Field>
+                  <Field label="Hook">
+                    <input value={npc.hook}
+                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{hook:e.target.value}})}
+                      placeholder="What do they want?" style={{ width:'100%' }} />
+                  </Field>
+                  <Field label="Secret">
+                    <input value={npc.secret}
+                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{secret:e.target.value}})}
+                      placeholder="What do they hide? (GM only)"
+                      style={{ width:'100%', borderColor:'#4c1d95' }} />
+                  </Field>
+                </div>
+              ))}
+            </div>
+          )
+        }
+      </div>
+    </div>
+  );
+}
+
+// ── Random Tables Module ───────────────────────────────────────────────────
+function RandomTablesModule({ campaign, dispatch }) {
+  const tables = campaign.randomTables || [];
+  const [selId, setSelId] = useState(null);
+  const [rollResult, setRollResult] = useState(null);
+  const [rolling, setRolling] = useState(false);
+
+  const selTable = tables.find(t => t.id === selId) || tables[0] || null;
+
+  // Reset when table list changes (e.g. deletion)
+  useEffect(() => {
+    if (selId && !tables.find(t => t.id === selId)) setSelId(null);
+  }, [tables.length]);
+
+  const rollTable = () => {
+    if (!selTable?.entries?.length) return;
+    setRolling(true);
+    setTimeout(() => {
+      setRollResult(pick(selTable.entries));
+      setRolling(false);
+    }, 300);
+  };
+
+  return (
+    <div style={{ display:'flex', gap:12, minHeight:220 }}>
+      {/* Table list */}
+      <div style={{ width:130, flexShrink:0, display:'flex', flexDirection:'column', gap:5 }}>
+        {tables.map(t => (
+          <div key={t.id} onClick={() => { setSelId(t.id); setRollResult(null); }}
+            style={{ padding:'6px 8px', borderRadius:4, cursor:'pointer', fontSize:12, fontWeight:600,
+              background: (selTable?.id===t.id) ? '#0c1f35' : '#111827',
+              border: (selTable?.id===t.id) ? '1px solid #f59e0b' : '1px solid transparent',
+              color: (selTable?.id===t.id) ? '#f59e0b' : '#e5e7eb',
+              whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+            {t.name || '(unnamed)'}
+          </div>
+        ))}
+        <button onClick={() => dispatch({type:'ADD_TABLE'})}
+          style={{ padding:'5px 8px', background:'#1f2937', border:'1px dashed #374151', color:'#6b7280', borderRadius:4, fontSize:12, cursor:'pointer', marginTop:4 }}>
+          ＋ New Table
+        </button>
+      </div>
+
+      {/* Table editor + roller */}
+      {selTable ? (
+        <div style={{ flex:1, display:'flex', flexDirection:'column', gap:10 }}>
+          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+            <input value={selTable.name}
+              onChange={e => dispatch({type:'UPD_TABLE', id:selTable.id, patch:{name:e.target.value}})}
+              style={{ flex:1, fontWeight:700, fontSize:14 }} />
+            <button onClick={() => { if(window.confirm('Delete this table?')) { dispatch({type:'DEL_TABLE',id:selTable.id}); setSelId(null); setRollResult(null); } }}
+              style={{ background:'none', border:'none', color:'#4b5563', cursor:'pointer', fontSize:14 }}>✕</button>
+          </div>
+          <TagList
+            items={selTable.entries || []}
+            onAdd={e => dispatch({type:'UPD_TABLE', id:selTable.id, patch:{entries:[...(selTable.entries||[]),e]}})}
+            onRemove={i => dispatch({type:'UPD_TABLE', id:selTable.id, patch:{entries:(selTable.entries||[]).filter((_,idx)=>idx!==i)}})}
+            placeholder="Add entry..." />
+          <button onClick={rollTable} disabled={!selTable.entries?.length}
+            style={{ padding:'8px 0', background: selTable.entries?.length ? '#92400e' : '#1f2937',
+              border:'1px solid #b45309', color:'#fef3c7', borderRadius:4, fontWeight:700, fontSize:14,
+              cursor: selTable.entries?.length ? 'pointer' : 'default', opacity: selTable.entries?.length ? 1 : 0.5 }}>
+            🎲 Roll
+          </button>
+          {rollResult && (
+            <div style={{ background:'#0c1f35', border:'1px solid #f59e0b', borderRadius:6, padding:'10px 14px',
+              fontSize:14, fontWeight:600, color:'#fde68a', textAlign:'center', transition:'opacity 0.2s',
+              opacity: rolling ? 0.4 : 1 }}>
+              {rolling ? '...' : rollResult}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'#374151', fontSize:12, fontStyle:'italic' }}>
+          Create a table to get started.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── NPC Generator Module ───────────────────────────────────────────────────
+function NPCGeneratorModule({ dispatch, factions }) {
+  const [current, setCurrent] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [saved, setSaved] = useState(false);
+
+  const generate = () => {
+    const npc = genNPC();
+    setCurrent(npc);
+    setHistory(h => [npc, ...h].slice(0, 5));
+    setSaved(false);
+  };
+
+  const saveNPC = () => {
+    if (!current) return;
+    dispatch({ type:'ADD_NPC_WITH_DATA', data: { name:current.name, role:current.role, hook:current.hook, faction:'', secret:'' } });
+    setSaved(true);
+  };
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      <button onClick={generate}
+        style={{ width:'100%', padding:'10px 0', background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', borderRadius:4, fontWeight:700, fontSize:14, cursor:'pointer' }}>
+        ✨ Generate NPC
+      </button>
+      {current && (
+        <div style={{ background:'#0c1f35', border:'1px solid #1e2d40', borderRadius:6, padding:'12px 14px' }}>
+          <div style={{ fontSize:17, fontWeight:900, color:'#f9fafb', marginBottom:4 }}>{current.name}</div>
+          <div style={{ fontSize:12, color:'#f59e0b', fontWeight:600, marginBottom:6 }}>{current.role}</div>
+          <div style={{ fontSize:13, color:'#9ca3af', fontStyle:'italic', marginBottom:10 }}>{current.hook}</div>
+          <button onClick={saveNPC} disabled={saved}
+            style={{ padding:'4px 12px', background: saved ? '#1f2937' : '#065f46', border:'1px solid #047857',
+              color: saved ? '#4b5563' : '#6ee7b7', borderRadius:4, fontSize:12, fontWeight:600, cursor: saved ? 'default' : 'pointer' }}>
+            {saved ? '✓ Saved to NPCs' : '＋ Save to NPCs'}
+          </button>
+        </div>
+      )}
+      {history.length > 1 && (
+        <div>
+          <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.1em', color:'#374151', textTransform:'uppercase', marginBottom:6 }}>Recent</div>
+          {history.slice(1).map((n, i) => (
+            <div key={i} style={{ padding:'4px 8px', borderLeft:'2px solid #1e2d40', marginBottom:4, display:'flex', gap:8, alignItems:'baseline' }}>
+              <span style={{ fontSize:12, fontWeight:600, color:'#6b7280' }}>{n.name}</span>
+              <span style={{ fontSize:11, color:'#374151' }}>{n.role}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Voice Recap Module (Placeholder) ──────────────────────────────────────
+function VoiceRecapModule() {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14, padding:'10px 0', textAlign:'center' }}>
+      <div style={{ fontSize:36 }}>🎙️</div>
+      <div style={{ fontSize:13, fontWeight:700, color:'#e5e7eb' }}>Voice Session Recap</div>
+      <div style={{ fontSize:12, color:'#4b5563', lineHeight:1.6 }}>
+        Record a session recap and let AI interpret it to fill in characters, NPCs, and story beats automatically.
+      </div>
+      <button disabled style={{ width:'100%', padding:'9px 0', background:'#1f2937', border:'1px solid #374151', color:'#4b5563', borderRadius:4, fontSize:13, fontWeight:600, cursor:'not-allowed' }}>
+        Coming Soon
+      </button>
+    </div>
+  );
+}
+
+// ── Module Card ────────────────────────────────────────────────────────────
+function ModuleCard({ title, onClose, onMoveLeft, onMoveRight, isFirst, isLast, children }) {
+  return (
+    <div style={{ background:'#070f1c', border:'1px solid #1e2d40', borderRadius:8, overflow:'hidden', flex:'1 1 300px', minWidth:260, maxWidth:540 }}>
+      <div style={{ padding:'7px 12px', borderBottom:'1px solid #1e2d40', display:'flex', alignItems:'center', justifyContent:'space-between', background:'#030a14' }}>
+        <span style={{ fontSize:11, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', color:'#f59e0b' }}>{title}</span>
+        <div style={{ display:'flex', gap:2 }}>
+          {!isFirst && (
+            <button onClick={onMoveLeft} title="Move left"
+              style={{ background:'none', border:'none', color:'#4b5563', cursor:'pointer', fontSize:12, padding:'0 5px' }}>◀</button>
+          )}
+          {!isLast && (
+            <button onClick={onMoveRight} title="Move right"
+              style={{ background:'none', border:'none', color:'#4b5563', cursor:'pointer', fontSize:12, padding:'0 5px' }}>▶</button>
+          )}
+          <button onClick={onClose} title="Close module"
+            style={{ background:'none', border:'none', color:'#6b7280', cursor:'pointer', fontSize:14, padding:'0 5px' }}>✕</button>
+        </div>
+      </div>
+      <div style={{ padding:14 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── Session Tab ────────────────────────────────────────────────────────────
+function SessionTab({ state, dispatch }) {
+  const campaign = getActiveCampaign(state);
+  const [activeModules, setActiveModules] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const addModule = key => {
+    if (!activeModules.includes(key)) setActiveModules(m => [...m, key]);
+    setPickerOpen(false);
+  };
+  const removeModule = key => setActiveModules(m => m.filter(k => k !== key));
+  const moveModule = (key, dir) => {
+    setActiveModules(m => {
+      const idx = m.indexOf(key);
+      const next = [...m];
+      const swap = idx + dir;
+      if (swap < 0 || swap >= next.length) return m;
+      [next[idx], next[swap]] = [next[swap], next[idx]];
+      return next;
+    });
+  };
+
+  const xpTotal = Object.values(campaign.xpChecklist).filter(Boolean).length;
+
+  return (
+    <div style={{ height:'100%', overflowY:'auto' }}>
+
+      {/* Top zone — session notes, prep, XP */}
+      <div style={{ padding:20 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
+          <Section title="Session Notes">
+            <textarea value={campaign.sessionNotes}
+              onChange={e => dispatch({type:'SET_NOTES', value:e.target.value})}
+              rows={14} style={{ width:'100%', resize:'vertical' }}
+              placeholder="Session notes, key decisions, events..." />
+          </Section>
+
+          <div>
+            <Section title="Pre-Session Prep">
+              {PREP_PROMPTS.map((q,i) => (
+                <div key={i} style={{ display:'flex', gap:10, padding:'9px 12px', background:'#070f1c', borderRadius:4, marginBottom:6, borderLeft:'3px solid #f59e0b', fontSize:13 }}>
+                  <span style={{ color:'#374151', fontSize:11, minWidth:16 }}>{i+1}.</span>
+                  {q}
+                </div>
+              ))}
+            </Section>
+
+            <Section title="End-of-Session XP">
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                background:'#070f1c', borderRadius:4, padding:'8px 12px', marginBottom:10 }}>
+                <span style={{ fontSize:13, color:'#6b7280' }}>XP awarded this session:</span>
+                <span style={{ fontSize:22, fontWeight:900, color:'#f59e0b' }}>{xpTotal}</span>
+              </div>
+              {XP_QUESTIONS.map(({key,text}) => (
+                <label key={key} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'7px 4px', cursor:'pointer',
+                  borderBottom:'1px solid #070f1c' }}>
+                  <input type="checkbox" checked={campaign.xpChecklist[key]||false}
+                    onChange={() => dispatch({type:'TOGGLE_XP',key})} style={{ marginTop:1 }} />
+                  <span style={{ fontSize:13, color: campaign.xpChecklist[key]?'#10b981':'#d1d5db' }}>{text}</span>
+                </label>
+              ))}
+              <div style={{ marginTop:12 }}>
+                <button onClick={() => dispatch({type:'RESET_XP'})}
+                  style={{ background:'none', border:'1px solid #374151', color:'#6b7280', padding:'4px 12px', borderRadius:4, fontSize:12, cursor:'pointer' }}>
+                  Reset Checklist
+                </button>
+              </div>
+            </Section>
+          </div>
+        </div>
+      </div>
+
+      {/* Module zone */}
+      <div style={{ padding:'0 20px 28px', borderTop:'1px solid #1e2d40' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 0 14px' }}>
+          <span style={{ fontSize:10, fontWeight:700, letterSpacing:'0.12em', color:'#6b7280', textTransform:'uppercase' }}>Session Modules</span>
+          <div style={{ position:'relative' }}>
+            {pickerOpen && <div className="dropdown-overlay" onClick={() => setPickerOpen(false)} />}
+            <Btn onClick={() => setPickerOpen(o=>!o)} variant="primary">＋ Add Module</Btn>
+            {pickerOpen && (
+              <div style={{ position:'absolute', right:0, top:'100%', marginTop:4, background:'#0d1a27', border:'1px solid #374151', borderRadius:6, zIndex:100, minWidth:230, padding:8, boxShadow:'0 8px 24px rgba(0,0,0,0.6)' }}>
+                {MODULE_REGISTRY.map(m => {
+                  const already = activeModules.includes(m.key);
+                  return (
+                    <div key={m.key} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 8px', borderRadius:4 }}>
+                      <div>
+                        <span style={{ fontSize:13, color: m.disabled ? '#4b5563' : '#e5e7eb', fontWeight:600 }}>{m.label}</span>
+                        {m.disabled && <span style={{ fontSize:10, color:'#374151', marginLeft:6 }}>Soon</span>}
+                        {already && !m.disabled && <span style={{ fontSize:10, color:'#374151', marginLeft:6 }}>Active</span>}
+                      </div>
+                      <Btn onClick={() => { if (!m.disabled && !already) addModule(m.key); }}
+                        style={{ opacity: m.disabled||already ? 0.4 : 1, cursor: m.disabled||already ? 'default' : 'pointer' }}>
+                        Add
+                      </Btn>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {activeModules.length === 0 ? (
+          <div style={{ color:'#374151', fontSize:13, fontStyle:'italic', textAlign:'center', padding:'28px 0', border:'1px dashed #1e2d40', borderRadius:8 }}>
+            No modules active. Click "＋ Add Module" to add in-session tools.
+          </div>
+        ) : (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:16 }}>
+            {activeModules.map((key, idx) => {
+              const def = MODULE_REGISTRY.find(m => m.key === key);
+              return (
+                <ModuleCard key={key} title={def.label}
+                  onClose={() => removeModule(key)}
+                  onMoveLeft={() => moveModule(key, -1)}
+                  onMoveRight={() => moveModule(key, 1)}
+                  isFirst={idx === 0} isLast={idx === activeModules.length-1}>
+                  {key==='dice'   && <DiceRollerModule />}
+                  {key==='tables' && <RandomTablesModule campaign={campaign} dispatch={dispatch} />}
+                  {key==='npcgen' && <NPCGeneratorModule dispatch={dispatch} factions={state.factions} />}
+                  {key==='voice'  && <VoiceRecapModule />}
+                </ModuleCard>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Campaign Bar ───────────────────────────────────────────────────────────
+function CampaignBar({ state, dispatch }) {
+  const [dropOpen, setDropOpen] = useState(false);
+  const campaign = getActiveCampaign(state);
+
+  return (
+    <div style={{ background:'#030a14', borderBottom:'1px solid #1e2d40', padding:'5px 20px', display:'flex', alignItems:'center', gap:12, flexShrink:0 }}>
+      <span style={{ fontSize:9, fontWeight:700, letterSpacing:'0.12em', color:'#374151', textTransform:'uppercase', flexShrink:0 }}>Campaign</span>
+
+      {/* Dropdown */}
+      <div style={{ position:'relative' }}>
+        {dropOpen && <div className="dropdown-overlay" onClick={() => setDropOpen(false)} />}
+        <button onClick={() => setDropOpen(o=>!o)}
+          style={{ background:'transparent', border:'1px solid #374151', color:'#6b7280', padding:'2px 8px', borderRadius:4, fontSize:11, cursor:'pointer', flexShrink:0, zIndex:100, position:'relative' }}>
+          ▼
+        </button>
+        {dropOpen && (
+          <div style={{ position:'absolute', left:0, top:'100%', marginTop:4, background:'#0d1a27', border:'1px solid #374151', borderRadius:6, zIndex:200, minWidth:240, padding:8, boxShadow:'0 8px 24px rgba(0,0,0,0.7)' }}>
+            {state.campaigns.map(c => (
+              <div key={c.id} onClick={() => { dispatch({type:'SWITCH_CAMPAIGN', id:c.id}); setDropOpen(false); }}
+                style={{ padding:'8px 12px', cursor:'pointer', borderRadius:4, fontSize:13, fontWeight:600,
+                  background: c.id===state.activeCampaignId ? '#0c1f35' : 'transparent',
+                  color: c.id===state.activeCampaignId ? '#f59e0b' : '#e5e7eb',
+                  borderLeft: c.id===state.activeCampaignId ? '3px solid #f59e0b' : '3px solid transparent' }}>
+                {c.name || '(Unnamed)'}
+              </div>
+            ))}
+            <div style={{ borderTop:'1px solid #1e2d40', marginTop:8, paddingTop:8 }}>
+              <button onClick={() => { dispatch({type:'ADD_CAMPAIGN'}); setDropOpen(false); }}
+                style={{ width:'100%', padding:'6px 12px', background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', borderRadius:4, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                ＋ New Campaign
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Inline name editor */}
+      <input value={campaign?.name || ''}
+        onChange={e => dispatch({type:'RENAME_CAMPAIGN', name:e.target.value})}
+        style={{ flex:1, maxWidth:340, background:'transparent', border:'none', borderBottom:'1px solid #1e2d40',
+          color:'#e5e7eb', fontSize:14, fontWeight:700, padding:'2px 4px', borderRadius:0 }} />
+
+      {state.campaigns.length > 1 && (
+        <button onClick={() => {
+          if (window.confirm(`Delete "${campaign?.name}"? All characters and session data for this campaign will be permanently lost.`)) {
+            dispatch({type:'DEL_CAMPAIGN', id:state.activeCampaignId});
+          }
+        }} style={{ background:'none', border:'1px solid #7f1d1d', color:'#fca5a5', padding:'3px 10px', borderRadius:4, fontSize:11, fontWeight:600, cursor:'pointer', marginLeft:'auto', flexShrink:0 }}>
+          Delete Campaign
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Header ─────────────────────────────────────────────────────────────────
+function Header({ onSave, lastSaved }) {
+  return (
+    <div style={{ background:'#030a14', borderBottom:'1px solid #1e2d40',
+      height:50, display:'flex', alignItems:'center', justifyContent:'space-between',
+      padding:'0 20px', flexShrink:0 }}>
+      <div>
+        <span style={{ fontWeight:900, fontSize:15, letterSpacing:'0.06em', color:'#f59e0b' }}>THE GREAT UNDOING</span>
+        <span style={{ fontSize:11, color:'#374151', marginLeft:10, fontWeight:600 }}>GM DASHBOARD · DW2</span>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        {lastSaved && <span style={{ fontSize:11, color:'#374151' }}>Saved {lastSaved}</span>}
+        <button onClick={onSave}
+          style={{ background:'#92400e', border:'1px solid #b45309', color:'#fef3c7',
+            padding:'5px 16px', borderRadius:4, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+          💾 Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Tab Bar ────────────────────────────────────────────────────────────────
+const TABS = [
+  { key:'characters', label:'Characters' },
+  { key:'quickref',   label:'Quick Reference' },
+  { key:'factions',   label:'NPCs & Factions' },
+  { key:'session',    label:'Session' },
+];
+
+function TabBar({ active, setActive }) {
+  return (
+    <div style={{ background:'#070f1c', borderBottom:'1px solid #1e2d40', padding:'0 16px', display:'flex', gap:2, flexShrink:0 }}>
+      {TABS.map(t => (
+        <button key={t.key} onClick={() => setActive(t.key)} style={{
+          padding:'10px 18px', fontSize:13, fontWeight:600, cursor:'pointer',
+          background:'transparent', border:'none',
+          borderBottom: active===t.key ? '2px solid #f59e0b' : '2px solid transparent',
+          color: active===t.key ? '#f59e0b' : '#4b5563',
+          transition:'color 0.12s', letterSpacing:'0.02em'
+        }}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── App ────────────────────────────────────────────────────────────────────
+function App() {
+  const [state, dispatch] = useReducer(reducer, null, loadState);
+  const [activeTab, setActiveTab] = useState('characters');
+  const [lastSaved, setLastSaved] = useState(null);
+
+  const save = useCallback(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      setLastSaved(new Date().toLocaleTimeString());
+    } catch(e) {
+      alert('Save failed: ' + e.message);
+    }
+  }, [state]);
+
+  // Debounced auto-save
+  const timer = useRef(null);
+  useEffect(() => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(save, 2500);
+    return () => clearTimeout(timer.current);
+  }, [state]);
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'#0f172a' }}>
+      <Header onSave={save} lastSaved={lastSaved} />
+      <CampaignBar state={state} dispatch={dispatch} />
+      <TabBar active={activeTab} setActive={setActiveTab} />
+      <div style={{ flex:1, overflow:'hidden' }}>
+        {activeTab==='characters' && <CharactersTab state={state} dispatch={dispatch} />}
+        {activeTab==='quickref'   && <QuickReferenceTab />}
+        {activeTab==='factions'   && <NPCFactionsTab state={state} dispatch={dispatch} />}
+        {activeTab==='session'    && <SessionTab state={state} dispatch={dispatch} />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
