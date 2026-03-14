@@ -45,9 +45,36 @@ The file is organized top-to-bottom in this order:
 
 Tailwind CSS via CDN + inline styles where needed. Dark theme with amber accent `#f59e0b`.
 
+## Architectural Patterns
+
+**Read `architectural_patterns.md` before adding any new feature.** It documents recurring patterns with exact line references:
+
+- `updAC` helper for campaign-scoped mutations (never mutate directly)
+- Template factory functions (`newChar`, `newNPC`, etc.) — always use these, not inline literals
+- Tab-local UI state vs. reducer state (only persist-across-reload data goes in reducer)
+- `useEffect` campaign-switch reset for tabs holding a selected entity ID
+- Dropdown overlay pattern for click-away dismissal
+- `{ id, patch }` dispatch convention for all `UPD_*` actions (send only changed fields)
+- `TagList` component for all tag-style inputs
+- Color palette constants (dark bg `#0f172a`, panel `#070f1c`, input `#1f2937`, border `#374151`, amber `#f59e0b`, success `#10b981`, danger `#ef4444`)
+- Conditional ternary inline styles (not CSS classes) for state-dependent colors
+- Debounced auto-save via `useRef` timer — do not add secondary persistence
+
+
+## Adding New Features or Fixing Bugs
+
+**IMPORTANT**: When you work on a new feature or bug, create a girt branch first. Then work on changes in that branch for the remainder of the session.
+
 ## Key Design Constraints
 
-- **Single file only** — all code stays in `gm_dashboard.html`. Do not split into multiple files.
-- **No build tooling** — do not introduce npm, webpack, vite, or any bundler.
-- **CDN dependencies only** — do not add local JS/CSS files.
-- **localStorage is the only persistence** — no backend, no IndexedDB, no file system APIs.
+
+- **localStorage is the only persistence** — no backend, no IndexedDB, no file system APIs. This can be improved in the future, but needs to be fully defined and understood before expanding.
+
+
+## Known Gaps / Roadmap
+
+- Voice Recap module (placeholder exists, currently disabled)
+- Export/import campaign data as JSON
+- Print-friendly character sheet view
+- Player-facing view (hides GM Notes fields)
+- Mobile layout polish
