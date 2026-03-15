@@ -62,6 +62,17 @@
     table { border-collapse: collapse; width: 100%; }
     th, td { text-align: left; }
     .dropdown-overlay { position: fixed; inset: 0; z-index: 99; }
+    @media print {
+      body { background: white !important; color: black !important; min-height: auto; }
+      .no-print { display: none !important; }
+      #root > div { height: auto !important; overflow: visible !important; }
+      .scrollable { overflow: visible !important; height: auto !important; max-height: none !important; }
+      input, textarea, select {
+        background: white !important; color: black !important;
+        border: 1px solid #999 !important;
+      }
+      .sec-header { color: black !important; border-color: #999 !important; }
+    }
   </style>
 </head>
 <body style="background:#0f172a; color:#f1f5f9; min-height:100vh;">
@@ -102,7 +113,7 @@ const newCampaign = (name = 'New Campaign') => ({
 
 function makeFreshState() {
   const c = newCampaign('The Great Undoing');
-  return { campaigns: [c], activeCampaignId: c.id, factions: [], npcs: [] };
+  return { campaigns: [c], activeCampaignId: c.id, factions: [], npcs: [], playerMode: false };
 }
 
 function loadState() {
@@ -127,7 +138,7 @@ function loadState() {
       c.characters = old.characters || [];
       c.sessionNotes = old.sessionNotes || '';
       c.xpChecklist = old.xpChecklist || blankXP();
-      return { campaigns: [c], activeCampaignId: c.id, factions: old.factions || [], npcs: old.npcs || [] };
+      return { campaigns: [c], activeCampaignId: c.id, factions: old.factions || [], npcs: old.npcs || [], playerMode: false };
     }
   } catch {}
   return makeFreshState();
@@ -184,6 +195,14 @@ function reducer(state, action) {
     case 'ADD_TABLE':  return updAC({ randomTables: [...(ac.randomTables||[]), { id:uid(), name:'New Table', entries:[] }] });
     case 'UPD_TABLE':  return updAC({ randomTables: (ac.randomTables||[]).map(t => t.id===action.id ? {...t,...action.patch} : t) });
     case 'DEL_TABLE':  return updAC({ randomTables: (ac.randomTables||[]).filter(t => t.id!==action.id) });
+
+    case 'IMPORT_STATE': {
+      const s = action.state;
+      const campaigns = (s.campaigns || []).map(c => ({ randomTables: [], ...c }));
+      const activeCampaignId = s.activeCampaignId || campaigns[0]?.id;
+      return { campaigns, activeCampaignId, factions: s.factions || [], npcs: s.npcs || [], playerMode: false };
+    }
+    case 'TOGGLE_PLAYER_MODE': return { ...state, playerMode: !state.playerMode };
 
     default: return state;
   }
@@ -472,11 +491,17 @@ function FactionStanding({ factions, rel, onChange }) {
 }
 
 // ── PC Detail ──────────────────────────────────────────────────────────────
-function PCDetail({ char, allChars, factions, dispatch }) {
-  const upd = patch => dispatch({ type:'UPD_CHAR', id:char.id, patch });
+function PCDetail({ char, allChars, factions, dispatch, playerMode }) {
+  const upd = patch => { if (!playerMode) dispatch({ type:'UPD_CHAR', id:char.id, patch }); };
 
   return (
     <div className="scrollable" style={{ flex:1, padding:'16px 20px', height:'100%' }}>
+
+      {playerMode && (
+        <div style={{ background:'#065f46', border:'1px solid #047857', borderRadius:6, padding:'8px 14px', marginBottom:14, fontSize:12, color:'#6ee7b7', fontWeight:600 }}>
+          👁 Player Mode — GM notes hidden. Fields are read-only.
+        </div>
+      )}
 
       <Section title="Identity">
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:8 }}>
@@ -580,19 +605,21 @@ function PCDetail({ char, allChars, factions, dispatch }) {
           onDelete={id => upd({storyBeats:char.storyBeats.filter(b=>b.id!==id)})} />
       </Section>
 
-      <Section title="GM Notes (Private)" open={false}>
-        <textarea value={char.gmNotes} rows={4}
-          onChange={e => upd({gmNotes:e.target.value})}
-          placeholder="Private GM notes — not visible to players..."
-          style={{ width:'100%', resize:'vertical', borderColor:'#6d28d9' }} />
-      </Section>
+      {!playerMode && (
+        <Section title="GM Notes (Private)" open={false}>
+          <textarea value={char.gmNotes} rows={4}
+            onChange={e => upd({gmNotes:e.target.value})}
+            placeholder="Private GM notes — not visible to players..."
+            style={{ width:'100%', resize:'vertical', borderColor:'#6d28d9' }} />
+        </Section>
+      )}
 
     </div>
   );
 }
 
 // ── Characters Tab ─────────────────────────────────────────────────────────
-function CharactersTab({ state, dispatch }) {
+function CharactersTab({ state, dispatch, playerMode }) {
   const campaign = getActiveCampaign(state);
   const [selId, setSelId] = useState(null);
 
@@ -613,7 +640,7 @@ function CharactersTab({ state, dispatch }) {
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
       {/* Sidebar */}
-      <div style={{ width:190, minWidth:190, background:'#070f1c', borderRight:'1px solid #1e2d40', display:'flex', flexDirection:'column' }}>
+      <div className="no-print" style={{ width:190, minWidth:190, background:'#070f1c', borderRight:'1px solid #1e2d40', display:'flex', flexDirection:'column' }}>
         <div style={{ padding:10, borderBottom:'1px solid #1e2d40' }}>
           <button onClick={addPC} style={{ width:'100%', padding:'7px 0', background:'#92400e', border:'1px solid #b45309', color:'#fef3c7', borderRadius:4, fontSize:13, fontWeight:700, cursor:'pointer' }}>
             + Add PC
@@ -644,7 +671,7 @@ function CharactersTab({ state, dispatch }) {
       {/* Detail panel */}
       {selected ? (
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
-          <div style={{ padding:'9px 16px', background:'#070f1c', borderBottom:'1px solid #1e2d40',
+          <div className="no-print" style={{ padding:'9px 16px', background:'#070f1c', borderBottom:'1px solid #1e2d40',
             display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
             <div>
               <span style={{ fontWeight:800, fontSize:15 }}>{selected.name||'(New PC)'}</span>
@@ -652,18 +679,27 @@ function CharactersTab({ state, dispatch }) {
                 Lv {selected.level} {selected.class}
               </span>
             </div>
-            <button onClick={() => {
-              if (window.confirm(`Delete ${selected.name||'this character'}? This cannot be undone.`)) {
-                dispatch({ type:'DEL_CHAR', id:selected.id });
-                setSelId(null);
-              }
-            }} style={{ background:'#450a0a', border:'1px solid #7f1d1d', color:'#fca5a5',
-              padding:'4px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
-              Delete PC
-            </button>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={() => window.print()}
+                style={{ background:'#1f2937', border:'1px solid #374151', color:'#e5e7eb',
+                  padding:'4px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+                🖨 Print
+              </button>
+              {!playerMode && (
+                <button onClick={() => {
+                  if (window.confirm(`Delete ${selected.name||'this character'}? This cannot be undone.`)) {
+                    dispatch({ type:'DEL_CHAR', id:selected.id });
+                    setSelId(null);
+                  }
+                }} style={{ background:'#450a0a', border:'1px solid #7f1d1d', color:'#fca5a5',
+                  padding:'4px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+                  Delete PC
+                </button>
+              )}
+            </div>
           </div>
           <PCDetail char={selected} allChars={campaign.characters}
-            factions={state.factions} dispatch={dispatch} />
+            factions={state.factions} dispatch={dispatch} playerMode={playerMode} />
         </div>
       ) : (
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'#1e2d40', fontSize:14 }}>
@@ -788,7 +824,7 @@ function QuickReferenceTab() {
 }
 
 // ── NPCs & Factions Tab ────────────────────────────────────────────────────
-function NPCFactionsTab({ state, dispatch }) {
+function NPCFactionsTab({ state, dispatch, playerMode }) {
   return (
     <div style={{ padding:20, height:'100%', overflowY:'auto' }}>
 
@@ -811,7 +847,7 @@ function NPCFactionsTab({ state, dispatch }) {
               <table>
                 <thead>
                   <tr style={{ background:'#030a14' }}>
-                    {['Name','Leader','Base','Agenda','Heat',''].map(h => (
+                    {['Name','Leader','Base','Agenda','Heat',''].filter(h => !playerMode || h !== 'Agenda').map(h => (
                       <th key={h} style={{ padding:'8px 10px', fontSize:10, fontWeight:700, letterSpacing:'0.08em', color:'#4b5563', borderBottom:'1px solid #1e2d40' }}>{h}</th>
                     ))}
                   </tr>
@@ -819,7 +855,7 @@ function NPCFactionsTab({ state, dispatch }) {
                 <tbody>
                   {state.factions.map((f,idx) => (
                     <tr key={f.id} style={{ borderBottom:'1px solid #0d1a27', background: idx%2===0?'transparent':'#030a14' }}>
-                      {['name','leader','base','agenda'].map(field => (
+                      {['name','leader','base','agenda'].filter(f => !playerMode || f !== 'agenda').map(field => (
                         <td key={field} style={{ padding:'5px 8px' }}>
                           <input value={f[field]}
                             onChange={e => dispatch({type:'UPD_FAC', id:f.id, patch:{[field]:e.target.value}})}
@@ -891,12 +927,14 @@ function NPCFactionsTab({ state, dispatch }) {
                       onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{hook:e.target.value}})}
                       placeholder="What do they want?" style={{ width:'100%' }} />
                   </Field>
-                  <Field label="Secret">
-                    <input value={npc.secret}
-                      onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{secret:e.target.value}})}
-                      placeholder="What do they hide? (GM only)"
-                      style={{ width:'100%', borderColor:'#4c1d95' }} />
-                  </Field>
+                  {!playerMode && (
+                    <Field label="Secret">
+                      <input value={npc.secret}
+                        onChange={e => dispatch({type:'UPD_NPC',id:npc.id,patch:{secret:e.target.value}})}
+                        placeholder="What do they hide? (GM only)"
+                        style={{ width:'100%', borderColor:'#4c1d95' }} />
+                    </Field>
+                  )}
                 </div>
               ))}
             </div>
@@ -1083,7 +1121,7 @@ function ModuleCard({ title, onClose, onMoveLeft, onMoveRight, isFirst, isLast, 
 }
 
 // ── Session Tab ────────────────────────────────────────────────────────────
-function SessionTab({ state, dispatch }) {
+function SessionTab({ state, dispatch, playerMode }) {
   const campaign = getActiveCampaign(state);
   const [activeModules, setActiveModules] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1120,14 +1158,16 @@ function SessionTab({ state, dispatch }) {
           </Section>
 
           <div>
-            <Section title="Pre-Session Prep">
-              {PREP_PROMPTS.map((q,i) => (
-                <div key={i} style={{ display:'flex', gap:10, padding:'9px 12px', background:'#070f1c', borderRadius:4, marginBottom:6, borderLeft:'3px solid #f59e0b', fontSize:13 }}>
-                  <span style={{ color:'#374151', fontSize:11, minWidth:16 }}>{i+1}.</span>
-                  {q}
-                </div>
-              ))}
-            </Section>
+            {!playerMode && (
+              <Section title="Pre-Session Prep">
+                {PREP_PROMPTS.map((q,i) => (
+                  <div key={i} style={{ display:'flex', gap:10, padding:'9px 12px', background:'#070f1c', borderRadius:4, marginBottom:6, borderLeft:'3px solid #f59e0b', fontSize:13 }}>
+                    <span style={{ color:'#374151', fontSize:11, minWidth:16 }}>{i+1}.</span>
+                    {q}
+                  </div>
+                ))}
+              </Section>
+            )}
 
             <Section title="End-of-Session XP">
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -1218,7 +1258,7 @@ function CampaignBar({ state, dispatch }) {
   const campaign = getActiveCampaign(state);
 
   return (
-    <div style={{ background:'#030a14', borderBottom:'1px solid #1e2d40', padding:'5px 20px', display:'flex', alignItems:'center', gap:12, flexShrink:0 }}>
+    <div className="no-print" style={{ background:'#030a14', borderBottom:'1px solid #1e2d40', padding:'5px 20px', display:'flex', alignItems:'center', gap:12, flexShrink:0 }}>
       <span style={{ fontSize:9, fontWeight:700, letterSpacing:'0.12em', color:'#374151', textTransform:'uppercase', flexShrink:0 }}>Campaign</span>
 
       {/* Dropdown */}
@@ -1269,21 +1309,41 @@ function CampaignBar({ state, dispatch }) {
 }
 
 // ── Header ─────────────────────────────────────────────────────────────────
-function Header({ onSave, lastSaved }) {
+function Header({ onSave, lastSaved, onExport, onImport, playerMode, onTogglePlayerMode }) {
+  const fileRef = useRef(null);
   return (
-    <div style={{ background:'#030a14', borderBottom:'1px solid #1e2d40',
+    <div className="no-print" style={{ background:'#030a14', borderBottom:'1px solid #1e2d40',
       height:50, display:'flex', alignItems:'center', justifyContent:'space-between',
       padding:'0 20px', flexShrink:0 }}>
       <div>
         <span style={{ fontWeight:900, fontSize:15, letterSpacing:'0.06em', color:'#f59e0b' }}>THE GREAT UNDOING</span>
         <span style={{ fontSize:11, color:'#374151', marginLeft:10, fontWeight:600 }}>GM DASHBOARD · DW2</span>
       </div>
-      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
         {lastSaved && <span style={{ fontSize:11, color:'#374151' }}>Saved {lastSaved}</span>}
+        <input ref={fileRef} type="file" accept=".json" style={{ display:'none' }}
+          onChange={onImport} />
+        <button onClick={() => fileRef.current.click()}
+          style={{ background:'#1f2937', border:'1px solid #374151', color:'#e5e7eb',
+            padding:'5px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+          📂 Import
+        </button>
+        <button onClick={onExport}
+          style={{ background:'#1f2937', border:'1px solid #374151', color:'#e5e7eb',
+            padding:'5px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+          💾 Export
+        </button>
+        <button onClick={onTogglePlayerMode}
+          style={{ background: playerMode ? '#065f46' : '#1f2937',
+            border: playerMode ? '1px solid #047857' : '1px solid #374151',
+            color: playerMode ? '#6ee7b7' : '#6b7280',
+            padding:'5px 12px', borderRadius:4, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+          {playerMode ? '👁 Player Mode ON' : '👁 Player Mode'}
+        </button>
         <button onClick={onSave}
           style={{ background:'#92400e', border:'1px solid #b45309', color:'#fef3c7',
             padding:'5px 16px', borderRadius:4, fontSize:13, fontWeight:700, cursor:'pointer' }}>
-          💾 Save
+          Save
         </button>
       </div>
     </div>
@@ -1300,7 +1360,7 @@ const TABS = [
 
 function TabBar({ active, setActive }) {
   return (
-    <div style={{ background:'#070f1c', borderBottom:'1px solid #1e2d40', padding:'0 16px', display:'flex', gap:2, flexShrink:0 }}>
+    <div className="no-print" style={{ background:'#070f1c', borderBottom:'1px solid #1e2d40', padding:'0 16px', display:'flex', gap:2, flexShrink:0 }}>
       {TABS.map(t => (
         <button key={t.key} onClick={() => setActive(t.key)} style={{
           padding:'10px 18px', fontSize:13, fontWeight:600, cursor:'pointer',
@@ -1339,16 +1399,56 @@ function App() {
     return () => clearTimeout(timer.current);
   }, [state]);
 
+  const handleExport = useCallback(() => {
+    try {
+      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `gm-dashboard-${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      alert('Export failed: ' + e.message);
+    }
+  }, [state]);
+
+  const handleImport = useCallback((e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!data.campaigns || !Array.isArray(data.campaigns)) {
+          alert('Invalid file: missing campaigns data.');
+          return;
+        }
+        if (window.confirm('Import this file? Your current data will be replaced.')) {
+          dispatch({ type: 'IMPORT_STATE', state: data });
+        }
+      } catch(err) {
+        alert('Failed to read file: ' + err.message);
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const playerMode = state.playerMode || false;
+
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'#0f172a' }}>
-      <Header onSave={save} lastSaved={lastSaved} />
+      <Header onSave={save} lastSaved={lastSaved}
+        onExport={handleExport} onImport={handleImport}
+        playerMode={playerMode} onTogglePlayerMode={() => dispatch({ type:'TOGGLE_PLAYER_MODE' })} />
       <CampaignBar state={state} dispatch={dispatch} />
       <TabBar active={activeTab} setActive={setActiveTab} />
       <div style={{ flex:1, overflow:'hidden' }}>
-        {activeTab==='characters' && <CharactersTab state={state} dispatch={dispatch} />}
+        {activeTab==='characters' && <CharactersTab state={state} dispatch={dispatch} playerMode={playerMode} />}
         {activeTab==='quickref'   && <QuickReferenceTab />}
-        {activeTab==='factions'   && <NPCFactionsTab state={state} dispatch={dispatch} />}
-        {activeTab==='session'    && <SessionTab state={state} dispatch={dispatch} />}
+        {activeTab==='factions'   && <NPCFactionsTab state={state} dispatch={dispatch} playerMode={playerMode} />}
+        {activeTab==='session'    && <SessionTab state={state} dispatch={dispatch} playerMode={playerMode} />}
       </div>
     </div>
   );
