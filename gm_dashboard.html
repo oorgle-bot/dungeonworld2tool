@@ -277,12 +277,44 @@ const genNPC = () => ({
   hook: pick(NPC_GEN.hooks),
 });
 
+// ── Scene Forge System Prompt ───────────────────────────────────────────────
+const SCENE_FORGE_SYSTEM_PROMPT = `You are a creative assistant for Game Masters running Dungeon World 2 (DW2), a narrative-focused tabletop RPG using the Powered by the Apocalypse framework. You help GMs craft vivid, dramatically compelling scene hooks.
+
+DW2 uses 2d6 rolls:
+- 10+ = full success, player mostly gets what they want
+- 7-9 = partial success, complication, cost, or reduced effect
+- 6- = failure or worse, GM makes a move, player marks XP
+
+Key GM Moves: Hurt them, Advance a Threat, Foreshadow a Threat, Make Them Choose, Escalate the Situation, Separate Them, Take Something Away, Set Up an Immediate Risk, Introduce Something New.
+
+Core DW2 moves GMs should reference: Defy Danger, Recall Lore, Sense Motive, Sneak Past, Influence Choice, Unearth Secrets, Undertake a Journey, Aid a Companion, and the four Battle Moves (Wrest Control, Keep Them Busy, Secure an Edge, All Out Attack).
+
+When given a campaign context and a situation description, output a scene in this EXACT JSON structure:
+{
+  "hook": "2-3 sentences of vivid, sensory opening narration. Present tense, GM voice, drop the players in medias res.",
+  "what_do_you_do": "A single sharp question to end the hook with, asking what the PCs do.",
+  "paths": [
+    {
+      "name": "Short path name (3-5 words)",
+      "description": "One sentence: what the player does and what move it might trigger.",
+      "on_success": "What a 10+ looks like narratively.",
+      "on_mixed": "What a 7-9 complication or cost looks like.",
+      "on_failure": "What a 6- consequence or GM move looks like."
+    }
+  ],
+  "gm_notes": "2-3 sentences of private GM advice: what's really going on, a secret to reveal, a twist, or how to connect this to a Threat or PC Conflict.",
+  "escalation": "One sentence: what happens if the PCs do nothing or delay too long."
+}
+
+Respond with ONLY valid JSON. No markdown fences, no preamble. The narration should feel grounded in the specific campaign world and fiction provided.`;
+
 // ── Module Registry ────────────────────────────────────────────────────────
 const MODULE_REGISTRY = [
   { key:'dice',   label:'Dice Roller',   disabled:false },
   { key:'tables', label:'Random Tables', disabled:false },
-  { key:'npcgen', label:'NPC Generator', disabled:false },
-  { key:'voice',  label:'Voice Recap',   disabled:true  },
+  { key:'npcgen',      label:'NPC Generator', disabled:false },
+  { key:'sceneforge',  label:'Scene Forge',   disabled:false },
+  { key:'voice',       label:'Voice Recap',   disabled:true  },
 ];
 
 // ── Shared UI ──────────────────────────────────────────────────────────────
@@ -1094,6 +1126,233 @@ function VoiceRecapModule() {
   );
 }
 
+// ── Scene Forge Module ─────────────────────────────────────────────────────
+const SCENE_FORGE_TONES = [
+  { value:'gritty-heroic',    label:'Gritty & heroic' },
+  { value:'dark-horror',      label:'Dark & horror-tinged' },
+  { value:'swashbuckling',    label:'Swashbuckling & fun' },
+  { value:'mythic-epic',      label:'Mythic & epic' },
+  { value:'political-intrigue', label:'Political & intrigue' },
+];
+
+const ROLL_BADGE_COLORS = {
+  success: { bg:'#065f46', text:'#6ee7b7', border:'#10b981' },
+  warning: { bg:'#92400e', text:'#fef3c7', border:'#f59e0b' },
+  danger:  { bg:'#450a0a', text:'#fca5a5', border:'#ef4444' },
+};
+
+function SceneForgeRollBadge({ color, label }) {
+  const c = ROLL_BADGE_COLORS[color];
+  return (
+    <span style={{ fontSize:11, fontWeight:600, padding:'2px 7px', borderRadius:4, background:c.bg, color:c.text, border:`0.5px solid ${c.border}`, whiteSpace:'nowrap', flexShrink:0 }}>
+      {label}
+    </span>
+  );
+}
+
+function SceneForgePathCard({ path, index }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{ background:'#0f172a', border:'1px solid #1e2d40', borderRadius:6, overflow:'hidden', marginBottom:8 }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width:'100%', display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 13px', background:'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
+          <span style={{ width:20, height:20, borderRadius:'50%', background:'#1f2937', border:'1px solid #374151', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:600, color:'#9ca3af', flexShrink:0 }}>{index + 1}</span>
+          <span style={{ fontWeight:600, fontSize:14, color:'#f9fafb' }}>{path.name}</span>
+        </div>
+        <span style={{ fontSize:11, color:'#4b5563', transform: open ? 'rotate(180deg)' : 'none', transition:'transform 0.15s' }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ padding:'0 13px 12px', borderTop:'1px solid #1e2d40' }}>
+          <p style={{ margin:'10px 0 12px', fontSize:13, color:'#9ca3af', lineHeight:1.6 }}>{path.description}</p>
+          <div style={{ display:'flex', gap:9, alignItems:'flex-start', marginBottom:7 }}>
+            <SceneForgeRollBadge color="success" label="10+" />
+            <p style={{ margin:0, fontSize:13, color:'#e5e7eb', lineHeight:1.6 }}>{path.on_success}</p>
+          </div>
+          <div style={{ display:'flex', gap:9, alignItems:'flex-start', marginBottom:7 }}>
+            <SceneForgeRollBadge color="warning" label="7–9" />
+            <p style={{ margin:0, fontSize:13, color:'#e5e7eb', lineHeight:1.6 }}>{path.on_mixed}</p>
+          </div>
+          <div style={{ display:'flex', gap:9, alignItems:'flex-start' }}>
+            <SceneForgeRollBadge color="danger" label="6−" />
+            <p style={{ margin:0, fontSize:13, color:'#e5e7eb', lineHeight:1.6 }}>{path.on_failure}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SceneForgeModule({ campaign, factions }) {
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gm_dashboard_apikey') || '');
+  const [keyDraft, setKeyDraft] = useState('');
+  const [keyPanelOpen, setKeyPanelOpen] = useState(() => !localStorage.getItem('gm_dashboard_apikey'));
+  const [situation, setSituation] = useState('');
+  const [tone, setTone] = useState('gritty-heroic');
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [keySaved, setKeySaved] = useState(false);
+
+  const saveApiKey = () => {
+    const k = keyDraft.trim();
+    if (!k) return;
+    localStorage.setItem('gm_dashboard_apikey', k);
+    setApiKey(k);
+    setKeyDraft('');
+    setKeyPanelOpen(false);
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(false), 2000);
+  };
+
+  const buildCampaignContext = () => {
+    const pcs = campaign.characters
+      .map(c => [c.name, c.class && `(${c.class}${c.level ? `, level ${c.level}` : ''})`].filter(Boolean).join(' '))
+      .filter(Boolean).join(', ');
+    const threats = factions
+      .map(f => [f.name, f.agenda].filter(Boolean).join(' — '))
+      .filter(Boolean).join('; ');
+    return [
+      `Campaign: ${campaign.name}`,
+      pcs && `Player characters: ${pcs}`,
+      threats && `Active factions/threats: ${threats}`,
+      campaign.sessionNotes?.trim() && `Session notes: ${campaign.sessionNotes.trim().slice(0, 400)}`,
+      `Desired tone: ${SCENE_FORGE_TONES.find(t => t.value === tone)?.label}`,
+    ].filter(Boolean).join('\n');
+  };
+
+  const generate = async () => {
+    if (!situation.trim() || !apiKey.trim()) return;
+    setLoading(true);
+    setError('');
+    setResult(null);
+    const userMsg = `Campaign context:\n${buildCampaignContext()}\n\nSituation to develop:\n${situation}`;
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          system: SCENE_FORGE_SYSTEM_PROMPT,
+          messages: [{ role:'user', content:userMsg }],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || `API error ${res.status}`);
+      const text = data.content?.find(b => b.type === 'text')?.text || '';
+      const clean = text.replace(/```json|```/g, '').trim();
+      setResult(JSON.parse(clean));
+    } catch(e) {
+      setError(e.message || 'Something went wrong. Check your API key and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const canGenerate = situation.trim() && apiKey.trim() && !loading;
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      {/* API Key panel */}
+      <div style={{ background:'#0f172a', border:'1px solid #1e2d40', borderRadius:6, overflow:'hidden' }}>
+        <button onClick={() => setKeyPanelOpen(o => !o)}
+          style={{ width:'100%', display:'flex', justifyContent:'space-between', alignItems:'center', padding:'9px 12px', background:'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+          <span style={{ fontSize:12, fontWeight:600, color: apiKey ? '#10b981' : '#f59e0b' }}>
+            {apiKey ? '✓ API key set' : '⚠ API key required'}
+          </span>
+          <span style={{ fontSize:11, color:'#4b5563', transform: keyPanelOpen ? 'rotate(180deg)' : 'none', transition:'transform 0.15s' }}>▾</span>
+        </button>
+        {keyPanelOpen && (
+          <div style={{ padding:'0 12px 12px', borderTop:'1px solid #1e2d40' }}>
+            <p style={{ fontSize:12, color:'#6b7280', margin:'8px 0 10px', lineHeight:1.5 }}>
+              Enter your Anthropic API key. Stored only in your browser's localStorage.
+            </p>
+            <div style={{ display:'flex', gap:6 }}>
+              <input
+                type="password"
+                value={keyDraft}
+                onChange={e => setKeyDraft(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && saveApiKey()}
+                placeholder={apiKey ? 'Enter new key to replace…' : 'sk-ant-…'}
+                style={{ flex:1, fontSize:13 }}
+              />
+              <Btn onClick={saveApiKey} variant="primary">{keySaved ? 'Saved' : 'Save'}</Btn>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Situation input */}
+      {!result && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:'#6b7280', marginBottom:5 }}>Situation</div>
+          <textarea
+            value={situation}
+            onChange={e => setSituation(e.target.value)}
+            placeholder="Describe the scene setup — who's here, where, what's just happened or about to happen…"
+            rows={4}
+            style={{ width:'100%', resize:'vertical', fontSize:13, marginBottom:8, boxSizing:'border-box' }}
+          />
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <select value={tone} onChange={e => setTone(e.target.value)} style={{ fontSize:12, flex:1 }}>
+              {SCENE_FORGE_TONES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            <Btn onClick={generate} variant="primary" style={{ opacity: canGenerate ? 1 : 0.5, cursor: canGenerate ? 'pointer' : 'not-allowed' }}>
+              {loading ? 'Forging…' : 'Forge Scene ↗'}
+            </Btn>
+          </div>
+          {error && <p style={{ margin:'8px 0 0', fontSize:12, color:'#ef4444' }}>{error}</p>}
+        </div>
+      )}
+
+      {loading && (
+        <div style={{ textAlign:'center', padding:'1.5rem', color:'#4b5563', fontSize:13 }}>Writing the scene…</div>
+      )}
+
+      {/* Result */}
+      {result && (
+        <div>
+          {/* Hook */}
+          <div style={{ background:'#030a14', border:'1px solid #1e2d40', borderRadius:6, padding:'13px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'#4b5563', marginBottom:6 }}>Scene Hook</div>
+            <p style={{ margin:'0 0 8px', fontSize:14, color:'#f9fafb', lineHeight:1.7 }}>{result.hook}</p>
+            <p style={{ margin:0, fontSize:14, fontWeight:600, color:'#f59e0b', fontStyle:'italic' }}>{result.what_do_you_do}</p>
+          </div>
+
+          {/* Paths */}
+          <div style={{ marginBottom:10 }}>
+            <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'#4b5563', marginBottom:8 }}>Paths Forward</div>
+            {result.paths?.map((path, i) => <SceneForgePathCard key={i} path={path} index={i} />)}
+          </div>
+
+          {/* GM Notes + Escalation */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
+            <div style={{ background:'#0f172a', border:'1px solid #1e2d40', borderRadius:6, padding:'12px 13px' }}>
+              <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'#4b5563', marginBottom:6 }}>GM Notes</div>
+              <p style={{ margin:0, fontSize:12, color:'#9ca3af', lineHeight:1.65 }}>{result.gm_notes}</p>
+            </div>
+            <div style={{ background:'#0f172a', border:'1px solid #7f1d1d', borderRadius:6, padding:'12px 13px' }}>
+              <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'#ef4444', marginBottom:6 }}>If They Delay</div>
+              <p style={{ margin:0, fontSize:12, color:'#9ca3af', lineHeight:1.65 }}>{result.escalation}</p>
+            </div>
+          </div>
+
+          <div style={{ display:'flex', gap:8 }}>
+            <Btn onClick={() => { setResult(null); }} style={{ flex:1 }}>New Scene</Btn>
+            <Btn onClick={() => { setResult(null); setSituation(''); }} variant="ghost">Clear All</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Module Card ────────────────────────────────────────────────────────────
 function ModuleCard({ title, onClose, onMoveLeft, onMoveRight, isFirst, isLast, children }) {
   return (
@@ -1238,10 +1497,11 @@ function SessionTab({ state, dispatch, playerMode }) {
                   onMoveLeft={() => moveModule(key, -1)}
                   onMoveRight={() => moveModule(key, 1)}
                   isFirst={idx === 0} isLast={idx === activeModules.length-1}>
-                  {key==='dice'   && <DiceRollerModule />}
-                  {key==='tables' && <RandomTablesModule campaign={campaign} dispatch={dispatch} />}
-                  {key==='npcgen' && <NPCGeneratorModule dispatch={dispatch} factions={state.factions} />}
-                  {key==='voice'  && <VoiceRecapModule />}
+                  {key==='dice'       && <DiceRollerModule />}
+                  {key==='tables'     && <RandomTablesModule campaign={campaign} dispatch={dispatch} />}
+                  {key==='npcgen'     && <NPCGeneratorModule dispatch={dispatch} factions={state.factions} />}
+                  {key==='sceneforge' && <SceneForgeModule campaign={campaign} factions={state.factions} />}
+                  {key==='voice'      && <VoiceRecapModule />}
                 </ModuleCard>
               );
             })}
